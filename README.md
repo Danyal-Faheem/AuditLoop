@@ -1,224 +1,210 @@
-# GPTScan
+# AuditLoop
 
 ## Description
 
-Using ChatGPT for logic vulnerability detection.
+An enhanced smart contract vulnerability scanner that combines LLM-based detection with **automated remediation and multi-stage verification**. The codebase extends the original GPTScan framework with:
 
-## How to Use
+1. **LLM-driven remediation**: Automatically fixes detected vulnerabilities and verifies the patches
+2. **Multiple verification modes**: Uses LLM self-check, rule-based re-evaluation, or static analysis (Slither/Falcon) as a secondary verification layer
+3. **Timeout and retry resilience**: Robust handling of LLM timeouts and errors (important for local Ollama instances)
+4. **Optional dual-LLM setup**: Run detection with one LLM and verification with another
+5. **DIVE benchmark integration**: High-confidence evaluation against the DIVE dataset for systematic assessment
 
-1. Install dependencies,
+### Key Differences from Original GPTScan
 
-- Requires Python 3.10+
-- Install Python dependencies: `pip install -r requirements.txt`
-- Requires Java 17+
+- **Remediation pipeline**: Original GPTScan stops after detection; this version attempts to fix each vulnerability and verifies the fix
+- **Verification strategies**: Choice of 4 verification modes (llm-self-check, llm-rule-recheck, slither-rule-recheck, falcon-rule-recheck)
+- **Timeout handling**: Configurable per-LLM-call timeout with automatic retry and fallback behavior
+- **Dual-LLM support**: Separate Ollama instances for detection and verification phases
+- **Benchmark framework**: Enhanced benchmarking with per-file sharding, resume capability, and structured metrics
 
-2. Run GPTScan
+## Installation & Setup
 
-Before start, please select the correct SOLC version, by running the commands:
+1. **Prerequisites**:
+   - Python 3.10+
+   - Java 17+ (for Falcon static analysis)
+   - SOLC compiler versions matching your smart contracts (use `solc-select` to manage multiple versions)
+   - Ollama (for local LLM inference) or OpenAI API key
 
-```shell
-solc-select install 0.8.19 # just an example of 0.8.19
-solc-select use 0.8.19
+2. **Install dependencies**:
+
+```bash
+pip install -r requirements.txt
 ```
 
-For example, if the source code is stored in the `/source` directory, run the command from the `src` folder:
+3. **Prepare your Solidity compiler**:
 
-```shell
-cd src
+```bash
+solc-select install 0.8.19  # Install specific version (example)
+solc-select use 0.8.19      # Activate it
 ```
 
-OpenAI mode (default provider):
+4. **Start Ollama server** (if using local LLM):
 
-```shell
-python3.10 main.py -s /sourcecode -o /sourcecode/output.json -k OPEN_AI_API_KEY_xxxxxxxxxxxxx
+```bash
+ollama serve
+# In another terminal, pull a model:
+ollama pull qwen3-coder:latest
 ```
 
-Ollama mode (local LLM):
+## Benchmark Execution
 
-```shell
-python3.10 main.py -s /sourcecode -o /sourcecode/output.json --provider ollama --model qwen2.5-coder:7b --ollama-url http://localhost:11434
-```
+Use the `benchmark.py` script to run systematic evaluations across multiple files or datasets.
 
-Provider flags:
-- `--provider`: `openai` or `ollama` (default: `openai`)
-- `--model`: override model name for selected provider
-- `--model-gpt4`: override GPT4 model used by GPT4 code paths
-- `--ollama-url`: Ollama endpoint URL (default: `http://localhost:11434`)
+### Basic Benchmark Setup
 
-For `openai` provider, `-k/--gptkey` is required.
+From the repository root:
 
-3. Check the output
-
-The output results are located at the location specified by the `-o` parameter, in the example above, it is located at `/sourcecode/output.json`.
-
-The metadata file `<output>.metadata.json` now also records `llm_provider` and `llm_model` for traceability.
-
-## Quick Benchmark
-
-Ollama-only (no OpenAI key):
-
-```shell
+```bash
 python3 benchmark.py \
-    -s /sourcecode \
-    --mode ollama-only \
-    --falcon-mode per-file \
-    --ollama-model qwen2.5-coder:7b \
-    --ollama-url http://localhost:11434
+  -s /path/to/source \
+  --mode ollama-only \
+  --falcon-mode per-file \
+  --ollama-model qwen3-coder:latest
 ```
 
-OpenAI vs Ollama compare mode:
+### Benchmark Flags Reference
 
-Use the benchmark helper at repository root to compare a local Ollama model against OpenAI on the same source path.
+**Input & Output**:
+- `-s, --source` (required): Source directory or file to scan
+- `-o, --output-dir`: Directory for benchmark results (default: `benchmark_results`)
+- `--run-id`: Stable identifier for this run; used for resume (default: timestamp)
+- `--resume`: Enable resume from checkpoint (default: true)
+- `--force-resume`: Allow resume even if run manifest changed
 
-```shell
+**Scan Mode**:
+- `--mode`: `compare` (OpenAI vs Ollama) or `ollama-only` (default: `ollama-only`)
+- `--falcon-mode`: `auto` (default) or `per-file` (run one file per GPTScan invocation; preserves Falcon coverage in multi-file directories)
+
+**LLM Configuration**:
+- `--ollama-model`: Ollama model name (default: `qwen2.5-coder:7b`)
+- `--ollama-url`: Ollama server URL (default: `http://localhost:11434`)
+- `--ollama-url-second`: Optional second Ollama instance for remediation verification
+- `--ollama-timeout-seconds`: Per-call timeout for Ollama (default: 60 seconds)
+- `--openai-model`: OpenAI model for compare mode (default: `gpt-3.5-turbo`)
+- `--openai-key`: OpenAI API key (required for `--mode compare`)
+
+**Static Analysis**:
+- `--disable-falcon`: Skip Falcon static analysis (useful for multi-file directories where Falcon may fail)
+- `--disable-static`: Completely disable static filtering stage; all LLM candidates bypass Falcon checks
+
+**Remediation (Vulnerability Fixing)**:
+- `--enable-remediation`: Enable LLM-driven remediation loop (off by default)
+- `--remediation-max-rounds`: Maximum fix/verify iterations per vulnerability (default: 3)
+- `--remediation-verify-mode`: Verification strategy (default: `llm-self-check`)
+  - `llm-self-check`: Pure LLM verification (fast, no external tools needed)
+  - `llm-rule-recheck`: LLM re-evaluation against vulnerability rules (medium cost)
+  - `slither-rule-recheck`: Slither static check first, fallback to LLM rule-recheck (slower, more precise)
+  - `falcon-rule-recheck`: Falcon static check first, fallback to LLM (slowest, highest precision)
+- `--drop-fixed-findings`: Remove fixed vulnerabilities from final output JSON (default: keep all)
+
+**Solidity Compiler Management**:
+- `--auto-install-solc`: Automatically install missing pragma versions using `solc-select` (useful for diverse contracts)
+
+**Evaluation**:
+- `--dataset-kind`: Dataset type for metrics (default: `auto`)
+  - `auto`: Infer from source path
+  - `dive`, `top200`, `defihacks`, `web3bugs`, `custom`
+- `--dive-labels-csv`: Path to DIVE labels CSV (required when dataset-kind is `dive`)
+- `--dive-eval-mode`: DIVE evaluation mapping mode (default: `high-confidence`)
+
+**Per-File Benchmarking** (when `--falcon-mode per-file`):
+- `--max-files`: Limit to first N Solidity files (0 = all; default: 0)
+- `--shard-timeout-seconds`: Kill per-file shard if exceeds timeout (0 = no timeout; default: 0)
+- `--show-shard-logs`: Print full stdout/stderr from each file shard
+- `--failed-log-tail-lines`: Number of lines to keep from failed shard logs (default: 25)
+
+### Example Benchmark Commands
+
+**Basic Ollama-only smoke test (100 files)**:
+
+```bash
 python3 benchmark.py \
-    -s /sourcecode \
-    --mode compare \
-    --falcon-mode per-file \
-    --openai-key OPEN_AI_API_KEY_xxxxxxxxxxxxx \
-    --openai-model gpt-3.5-turbo \
-    --ollama-model qwen2.5-coder:7b \
-    --ollama-url http://localhost:11434
+  -s /path/to/source \
+  --mode ollama-only \
+  --falcon-mode per-file \
+  --max-files 100 \
+  --ollama-model qwen3-coder:latest \
+  --run-id smoke_100_files
 ```
 
-`--falcon-mode per-file` runs one Solidity file per GPTScan invocation and merges outputs. This keeps Falcon-backed static checks enabled for benchmark corpora that are plain multi-file directories.
+**Full benchmark with remediation**:
 
-In `per-file` mode, the benchmark helper also tries `solc-select use <pragma-version>` per Solidity file (best effort) to reduce Falcon compile failures caused by mixed pragma versions.
-
-Checkpoint/resume is enabled by default. Use a stable run id to continue long runs safely:
-
-```shell
+```bash
 python3 benchmark.py \
-    -s /sourcecode \
-    --mode ollama-only \
-    --falcon-mode per-file \
-    --run-id top200_qwen_run1 \
-    --resume
+  -s /path/to/source \
+  --mode ollama-only \
+  --falcon-mode per-file \
+  --ollama-model qwen3-coder:latest \
+  --enable-remediation \
+  --remediation-max-rounds 3 \
+  --remediation-verify-mode llm-rule-recheck \
+  --run-id full_run_with_remediation
 ```
 
-The run directory stores `run_manifest.json` and per-shard progress in `_shards_<output_stem>/resume_progress.json`.
+**Benchmark with dual Ollama (different model for verification)**:
 
-Use `--max-files N` to run a deterministic smoke subset in per-file mode (first N sorted Solidity files):
-
-```shell
+```bash
 python3 benchmark.py \
-    -s /sourcecode \
-    --mode ollama-only \
-    --falcon-mode per-file \
-    --max-files 100 \
-    --run-id smoke100 \
-    --resume
+  -s /path/to/source \
+  --mode ollama-only \
+  --falcon-mode per-file \
+  --ollama-model qwen3-coder:latest \
+  --ollama-url-second http://localhost:11435 \
+  --ollama-timeout-seconds 120 \
+  --enable-remediation \
+  --remediation-verify-mode llm-rule-recheck \
+  --run-id dual_ollama_run
 ```
 
-If per-file runs appear "stuck", use:
-- `--show-shard-logs` to print each shard's stdout/stderr
-- `--failed-log-tail-lines 50` (or larger) to keep longer failure tails in metadata
-- `--shard-timeout-seconds 1800` to skip unusually long shards and continue benchmark progress
-- `--auto-install-solc` to install missing pragma versions detected in preflight (`solc-select install <version>`)
+**Benchmark on dataset with static + remediation**:
 
-Per-file runs also print simple complexity stats for each file (`loc`, contract count, function count) so you can see which shard is heavy.
-
-Outputs are written to `benchmark_results/<timestamp>/` with:
-- `openai_output.json` and `openai_output.json.metadata.json`
-- `ollama_output.json` and `ollama_output.json.metadata.json`
-- `comparison.json` (compare mode) or `summary.json` (ollama-only mode)
-
-If DIVE evaluation is enabled, additional artifacts are written:
-- `<provider>_output.dive_eval.json`
-- `<provider>_output.json.metadata.json` includes `dive_evaluation_summary`
-
-### DIVE Labeled Evaluation (Medium-Effort)
-
-Create a vulnerable-only DIVE subset (example: first 2000 vulnerable contracts):
-
-```shell
-python3 scripts/create_dive_vuln_subset.py \
-    --labels-csv /path/to/DIVE/Labels/DIVE_Labels.csv \
-    --source-dir /path/to/DIVE/Raw/PRE/Source\ codes \
-    --output-dir /path/to/DIVE/subsets/vuln2000 \
-    --limit 2000 \
-    --overwrite
-```
-
-Run benchmark with DIVE labels (high-confidence mapping mode):
-
-```shell
+```bash
 python3 benchmark.py \
-    -s /path/to/DIVE/Raw/PRE/Source\ codes \
-    --mode ollama-only \
-    --falcon-mode per-file \
-    --dataset-kind dive \
-    --dive-labels-csv /path/to/DIVE/Labels/DIVE_Labels.csv \
-    --dive-eval-mode high-confidence
+  -s /path/to/dataset \
+  --mode ollama-only \
+  --falcon-mode per-file \
+  --dataset-kind dive \
+  --dive-labels-csv /path/to/DIVE_Labels.csv \
+  --dive-eval-mode high-confidence \
+  --enable-remediation \
+  --remediation-max-rounds 3 \
+  --remediation-verify-mode slither-rule-recheck \
+  --run-id dataset_eval_slither_verify
 ```
 
-DIVE smoke run (about 100 files) with LLM detection + LLM remediation + LLM verification:
+**Resume a stopped benchmark**:
 
-```shell
+```bash
 python3 benchmark.py \
-    -s /path/to/DIVE/Raw/PRE/Source\ codes \
-    --mode ollama-only \
-    --falcon-mode per-file \
-    --max-files 100 \
-    --dataset-kind dive \
-    --dive-labels-csv /path/to/DIVE/Labels/DIVE_Labels.csv \
-    --dive-eval-mode high-confidence \
-    --enable-remediation \
-    --remediation-max-rounds 3 \
-    --remediation-verify-mode llm-rule-recheck \
-    --run-id dive_smoke100_rule_recheck
+  -s /path/to/source \
+  --mode ollama-only \
+  --falcon-mode per-file \
+  --run-id full_run_with_remediation \
+  --resume
 ```
 
-Add `--drop-fixed-findings` if you want final output JSON to keep unresolved findings only.
+### Output Artifacts
 
-High-confidence mapping currently reports metrics for mapped classes and explicitly reports unsupported DIVE classes in the evaluation artifact.
+Benchmarks produce outputs in `benchmark_results/<run_id>/`:
 
-### Remediation Verification Modes
+- `ollama_output.json`: Raw detected findings
+- `ollama_output.json.metadata.json`: Scan metadata (counts, timings, remediation stats)
+- `ollama_output.dive_eval.json`: DIVE evaluation report (if `--dive-labels-csv` provided)
+- `summary.json`: High-level summary (ollama-only mode)
+- `comparison.json`: Side-by-side metrics (compare mode)
+- `_shards_ollama_output/`: Per-file shard results and resume checkpoint
 
-Benchmark supports these remediation verification modes:
-- `llm-self-check`
-- `llm-rule-recheck`
-- `slither-rule-recheck` (new): uses Slither first, then falls back to `llm-rule-recheck` if static verification is unavailable/inconclusive.
-- `falcon-rule-recheck` (new): runs Falcon detector checks on patched artifacts when detector mapping is available.
+### Dataset Requirements
 
-## Supported Project Types
+The benchmark expects a dataset with these attributes:
 
-Currently supported project types include:
-- Single file in a folder, i.e., `contract` folder with a single `example.sol` file. Use the path of folder as source (**NOT THE FILE, WHICH MAY CAUSE ERRORS.**)
-- ~~Multi-file, i.e., a directory with multiple `.sol` files, without any other external dependencies~~
-- Common framework projects, such as Truffle, Hardhat, Brownie, etc.
+- **Source files**: Smart contract source code files (`.sol`)
+- **Labeling** (optional, for evaluation):
+  - CSV format mapping contract IDs to vulnerability class labels
+  - Required columns: contractID, and labels for each vulnerability class
+- **File naming**: Contracts should be identifiable by filename (e.g., `123.sol` → contract ID 123) for evaluation linkage
 
-Tested frameworks include:
-- Hardhad
-- Truffle
-- Brownie
+If you have labeling, provide via `--dive-labels-csv` to enable automated evaluation metrics (precision, recall, F1).
 
-Note that this project does not include the compilation environment, such as Node.js, which needs to be installed separately.
 
-**NOTE**: Please also make sure that you path do not contain keywords like `external`, `openzeppelin`, `uniswap`, `pancakeswap`, `legacy`, since we are using a naive way to match the path. Find more in `src/antlr4helper/callgraph.py:__parse_all_files`. It will not have explict error messages, but will cause empty output.
-
-## Dataset
-
-Dataset used to evaluate GPTScan in the paper, are the following:
-1. Web3Bugs: [https://github.com/MetaTrustLabs/GPTScan-Web3Bugs](https://github.com/MetaTrustLabs/GPTScan-Web3Bugs)
-2. DefiHacks: [https://github.com/MetaTrustLabs/GPTScan-DefiHacks](https://github.com/MetaTrustLabs/GPTScan-DefiHacks)
-3. Top200: [https://github.com/MetaTrustLabs/GPTScan-Top200](https://github.com/MetaTrustLabs/GPTScan-Top200)
-
-## How to Cite this project
-
-```bibtex
-@inproceedings{sun2024gptscan,
-    author = {Sun, Yuqiang and Wu, Daoyuan and Xue, Yue and Liu, Han and Wang, Haijun and Xu, Zhengzi and Xie, Xiaofei and Liu, Yang},
-    title = {{GPTScan}: Detecting Logic Vulnerabilities in Smart Contracts by Combining GPT with Program Analysis},
-    year = {2024},
-    isbn = {9798400702174},
-    publisher = {Association for Computing Machinery},
-    address = {New York, NY, USA},
-    url = {https://doi.org/10.1145/3597503.3639117},
-    doi = {10.1145/3597503.3639117},
-    booktitle = {Proceedings of the IEEE/ACM 46th International Conference on Software Engineering},
-    articleno = {166},
-    numpages = {13},
-    series = {ICSE '24}
-}
-```
