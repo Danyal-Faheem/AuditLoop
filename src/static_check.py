@@ -9,6 +9,26 @@ import rich_utils
 
 console = rich.get_console()
 
+
+def _coerce_symbol(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, dict):
+        if len(value) == 0:
+            return ""
+        # Most LLM outputs for variable extraction are {"varName": "description"}.
+        # Prefer the key as the symbol name used in source code checks.
+        return str(next(iter(value.keys())))
+    if isinstance(value, (list, tuple, set)):
+        if len(value) == 0:
+            return ""
+        return _coerce_symbol(next(iter(value)))
+    return str(value)
+
 # Could return None
 def __has_check(var:str, text):
     if var in text:
@@ -16,17 +36,23 @@ def __has_check(var:str, text):
     return None
 
 def __has_noneq_check(var1:str, var2:str, text):
+    var1 = _coerce_symbol(var1)
+    var2 = _coerce_symbol(var2)
     if var1 in text and var2 in text:
         return f"{var1} != {var2}" in text or f"{var1}!={var2}" in text or f"{var1} !={var2}" in text or f"{var1}!= {var2}" in text or f"{var2} != {var1}" in text or f"{var2}!={var1}" in text or f"{var2}!= {var1}" in text or f"{var2} !={var1}" in text
     return False
 
 def __has_eq_check(var1:str, var2:str, text):
+    var1 = _coerce_symbol(var1)
+    var2 = _coerce_symbol(var2)
     if var1 in text and var2 in text:
         return f"{var1} == {var2}" in text or f"{var1}=={var2}" in text or f"{var1} =={var2}" in text or f"{var1}== {var2}" in text or f"{var2} == {var1}" in text or f"{var2}=={var1}" in text or f"{var2}== {var1}" in text or f"{var2} =={var1}" in text
     return False
 
 # only var1 > var2, since var2 is 0
 def __has_larger_check(var1:str, var2:str, text):
+    var1 = _coerce_symbol(var1)
+    var2 = _coerce_symbol(var2)
     if var1 in text and var2 in text:
         return f"{var1} > {var2}" in text or f"{var2}>{var1}" in text or f"{var1}> {var2}" in text or f"{var1} >{var2}" in text
     return False
@@ -76,61 +102,68 @@ def __order_first_b(a:List[str], b:List[str], text):
     return False
 
 def __call_arg_check(function:str, arg:str, text:str):
+    function = _coerce_symbol(function)
+    arg = _coerce_symbol(arg)
     if function not in text:
         return True
     else:
         return False
     
 def __emit_at_end(function:str, text:str):
+    function = _coerce_symbol(function)
     if f"emit {function}" not in text:
         return True
     # the length is 5 means that there are 4 commas, and there are 3 statements after emit.
     return len(re.split(f'emit\\s*{function}', text)[-1].split[","]) > 5
 
 def __in_code(pattern:str, text:str):
+    pattern = _coerce_symbol(pattern)
     return pattern.lower() in text.lower()
 
 def run_static_check(checker:str, args, function_name:str, falcon:Falcon, text:str) -> bool:
     # if there is a vulnerability, return true
     match checker:
         case "find_data_dependency":
-            if args[0] is None or args[0] == '' or args[0] == 'N/A':
+            var_a = _coerce_symbol(args[0])
+            var_b = _coerce_symbol(args[1])
+
+            if var_a is None or var_a == '' or var_a == 'N/A':
                 return False
-            if args[1] is None or args[1] == '' or args[1] == 'N/A':  # TODO 'N/A' for the case of return value
+            if var_b is None or var_b == '' or var_b == 'N/A':  # TODO 'N/A' for the case of return value
                 return False
-            if args[1] == args[0]:
+            if var_b == var_a:
                 return True
 
-            console.print(rich_utils.make_args_table(args, "find_data_dependency"))
+            console.print(rich_utils.make_args_table([var_a, var_b], "find_data_dependency"))
 
             lines = text.splitlines()
             for line in lines:
                  # if these two variable are in the same line, they have dependency
-                if args[0] in line and args[1] in line and '=' in line:
+                if var_a in line and var_b in line and '=' in line:
                     return True
                 # if first parameter is in the return statement
-                if args[0] in line and 'return ' in line:
+                if var_a in line and 'return ' in line:
                     return True
                     
             if falcon is None:
                 logger.warning("Falcon is not initialized, skipping data dependency check")
                 return False
             
-            return falcon_adapter.find_data_dependency(args[0], args[1], function_name, falcon)
+            return falcon_adapter.find_data_dependency(var_a, var_b, function_name, falcon)
         
         case "first_deposit_check":
             if falcon is None:
                 logger.warning("Falcon is not initialized, skipping first deposit check")
                 return False
-            varB = args[0]
-            varC = args[1]
-            varA = args[2]
+            varB = _coerce_symbol(args[0])
+            varC = _coerce_symbol(args[1])
+            varA = _coerce_symbol(args[2])
             logger.info(f"first_deposit_check: VariableA: {varA}; VariableB: {varB}; VariableC: {varC}")
             # check Variable C
             if varC == "" or varC == "N/A":
                 return False
             
-            console.print(rich_utils.make_args_table(args, "first_deposit_check"))
+            console.print(rich_utils.make_args_table([varB, varC, varA], "first_deposit_check"))
 
             # check if (VariableB == 0) or in the else branch via __has_larger_check(varB, "0", text)) but need if
             checkB = __has_eq_check(varB, "0", text)
@@ -180,20 +213,22 @@ def run_static_check(checker:str, args, function_name:str, falcon:Falcon, text:s
             return check
     
         case "call_arg_check":
-            console.print(rich_utils.make_args_table(args, "call_arg_check"))
+            function = _coerce_symbol(args[0])
+            arg = _coerce_symbol(args[1])
+            console.print(rich_utils.make_args_table([function, arg], "call_arg_check"))
             if falcon is None:
                 logger.warning("Falcon is not initialized, skipping call arg check")
                 return False
-            check = __call_arg_check(args[0], args[1], text)
-            check |= falcon_adapter.is_arg_taint(args[0], 0, function_name, falcon)
+            check = __call_arg_check(function, arg, text)
+            check |= falcon_adapter.is_arg_taint(function, 0, function_name, falcon)
             return check
         
         case "emit_at_end":
-            check = __emit_at_end(args[0], text)
+            check = __emit_at_end(_coerce_symbol(args[0]), text)
             return check
 
         case "in_code":
-            check = __in_code(args[0], text)
+            check = __in_code(_coerce_symbol(args[0]), text)
             return check
         
         case "check_require":

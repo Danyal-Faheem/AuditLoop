@@ -18,7 +18,7 @@ def is_in_whitelist(contract_name: str, function_name: str, content: str, visibi
         signature = re.sub(r"uint\d+", "uint", signature)
         signature = re.sub(r"int\d+", "int", signature)
         if signature in whitelist and whitelist[signature]["lines"] <= loc+2 and whitelist[signature]["lines"] >= loc-2:
-            logger.info("In whitelist: {}".format(signature))
+            logger.debug("In whitelist: {}".format(signature))
             return True
     return False
 

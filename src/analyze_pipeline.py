@@ -1,7 +1,7 @@
 import subprocess
 import time
 import multiprocessing
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional, Any
 from query_template import prompt_single_yes_no_question, prompt_multiple_choice_scenarios
 from chatgpt_api import Chat
 from utils import split_answer_section
@@ -17,6 +17,92 @@ import rich
 import rich_utils
 logger = logging.getLogger(__name__)
 console = rich.get_console()
+
+
+def _extract_balanced_json_object(text: str) -> Optional[str]:
+    start = -1
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for idx, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+
+        if ch == "{":
+            if depth == 0:
+                start = idx
+            depth += 1
+            continue
+
+        if ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start != -1:
+                return text[start:idx+1]
+
+    return None
+
+
+def _extract_json_dict(response: str) -> Dict[str, Any]:
+    candidates: List[str] = []
+    stripped = response.strip()
+
+    # Prefer fenced blocks first because Ollama often wraps JSON in markdown.
+    for block in re.findall(r"```(?:json)?\s*(.*?)```", response, flags=re.IGNORECASE | re.DOTALL):
+        block = block.strip()
+        if block:
+            candidates.append(block)
+
+    if stripped:
+        candidates.append(stripped)
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+        maybe_json = _extract_balanced_json_object(candidate)
+        if maybe_json is None:
+            continue
+        try:
+            parsed = json.loads(maybe_json)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+
+    raise json.JSONDecodeError("Could not find a valid JSON object", response, 0)
+
+
+def _response_starts_with_yes(response: str) -> bool:
+    normalized = response.strip().lower()
+
+    if normalized.startswith("```"):
+        fenced = re.findall(r"```(?:json)?\s*(.*?)```", normalized, flags=re.IGNORECASE | re.DOTALL)
+        if len(fenced) > 0:
+            normalized = fenced[0].strip().lower()
+
+    if normalized.startswith("yes"):
+        return True
+
+    if normalized.startswith("no"):
+        return False
+
+    match = re.search(r"\b(yes|no)\b", normalized)
+    return match is not None and match.group(1) == "yes"
 
 def ask_with_timeout(prompt, gpt4=False, timeout=90):
     # logger.info(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
@@ -300,7 +386,7 @@ def ask_whether_has_vul_with_scenario_v9(src_folder: str, rules: List[dict]) -> 
                         prompt = prompt_multiple_choice_scenarios(
                             list(map(lambda x: x["property"][0], has_property_rules)), function_data["source"])
                         res = ask_with_timeout(prompt)
-                        answer = json.loads(res.split("}")[0]+"}")
+                        answer = _extract_json_dict(res)
                         for key, value in answer.items():
                             try:
                                 int_key = int(key)
@@ -320,7 +406,7 @@ def ask_whether_has_vul_with_scenario_v9(src_folder: str, rules: List[dict]) -> 
                                     console.print(rich_utils.make_prompt_panel(function_data["source"], has_property_rules[int_key-1]["property"][0]+" "+has_property_rules[int_key-1]["property"][1], "Single Choice Scenario"))
                                     res = ask_with_timeout(prompt)
                                     # process answer
-                                    if res.lower().startswith("yes"):
+                                    if _response_starts_with_yes(res):
                                         meta_data["files_after_step_2"].add(file)
                                         meta_data["contracts_after_step_2"].add(f"{file}!!!{contract}")
                                         meta_data["functions_after_step_2"].add(f"{file}!!!{contract}!!!{func_}")
@@ -390,7 +476,7 @@ def ask_whether_has_vul_with_scenario_v9(src_folder: str, rules: List[dict]) -> 
                         try:
                             console.print(rich_utils.make_prompt_panel(caller_c+"\n"+function_data["source"], "\n".join(list(map(lambda x: x["property"][0], rules_for_caller))), "Multiple Choice Scenarios"))
                             res = ask_with_timeout(prompt)
-                            answer = json.loads(res.split("}")[0]+"}")
+                            answer = _extract_json_dict(res)
                         except TimeoutError:
                             logger.error(
                                 "Timeout when asking function {}".format(func_))
@@ -427,7 +513,7 @@ def ask_whether_has_vul_with_scenario_v9(src_folder: str, rules: List[dict]) -> 
                                     console.print(rich_utils.make_prompt_panel(caller_c+"\n"+function_data["source"], rules_for_caller[int_key-1]["property"][0]+" "+rules_for_caller[int_key-1]["property"][1], "Single Choice Scenario"))
                                     res = ask_with_timeout(prompt)
                                     # process answer
-                                    if res.lower().startswith("yes"):
+                                    if _response_starts_with_yes(res):
                                         meta_data["files_after_step_2"].add(file)
                                         meta_data["contracts_after_step_2"].add(f"{file}!!!{contract}")
                                         meta_data["functions_after_step_2"].add(f"{file}!!!{contract}!!!{func_}")
@@ -524,14 +610,18 @@ def ask_for_static_json(prompts, source, answer_keys):
     res = ask_with_timeout(prompts+"\n"+source)
     # process answer
     answer = {}
-    data = json.loads(res[:res.rindex("}")+1])
+    data = _extract_json_dict(res)
     for key in answer_keys:
         if key in data:
             have_result_flag = False
-            for value in data[key]:
-                answer[key] = value
+            if isinstance(data[key], list):
+                for value in data[key]:
+                    answer[key] = value
+                    have_result_flag = True
+                    break
+            else:
+                answer[key] = data[key]
                 have_result_flag = True
-                break
             if not have_result_flag:
                 answer[key] = None
         else:
@@ -540,7 +630,10 @@ def ask_for_static_json(prompts, source, answer_keys):
 
 def ask_for_static_json_single(prompts, source, answer_key):
     res = ask_with_timeout(prompts+"\n"+source)
-    data = json.loads(res[:res.rindex("}")+1])
-    return {answer_key: list(data.values())[0]}
+    data = _extract_json_dict(res)
+    first_value = None
+    if len(data.values()) > 0:
+        first_value = list(data.values())[0]
+    return {answer_key: first_value}
 
 

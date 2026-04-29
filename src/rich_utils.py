@@ -16,7 +16,7 @@ def make_args_table(args:List[str], title:str) -> Table:
         if isinstance(arg, str):
             table.add_row(f"arg\[{index}]", arg)
         elif isinstance(arg, list):
-            table.add_row(f"arg\[{index}]", "\[" + ", ".join(arg) + "]")
+            table.add_row(f"arg\[{index}]", "\[" + ", ".join(map(lambda x: str(x), arg)) + "]")
         else:
-            breakpoint()
+            table.add_row(f"arg\[{index}]", str(arg))
     return table

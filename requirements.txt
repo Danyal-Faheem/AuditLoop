@@ -35,7 +35,7 @@ pycodestyle==2.10.0
 pycryptodome==3.17
 pygments==2.18.0
 PyJWT==2.3.0
-pysha3==1.0.2
+safe-pysha3==1.0.4
 PyYAML==6.0
 requests==2.28.2
 rich==13.7.1
@@ -51,4 +51,5 @@ wcwidth==0.2.6
 yarl==1.8.2
 z3-solver==4.11.2.0
 zipp==1.0.0
+slither-analyzer==0.10.4
 falcon-analyzer@git+https://github.com/MetaTrustLabs/falcon-metatrust
